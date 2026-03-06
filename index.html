@@ -76,12 +76,25 @@ function App() {
     else { setLoading(false); setShowSettings(true); }
   }, []);
 
+  // GETクエリパラメータ経由でAPIを呼ぶ（Workspace CORS回避）
+  const gasCall = async (url, params) => {
+    let fetchUrl = url;
+    if (params) {
+      const encoded = encodeURIComponent(JSON.stringify(params));
+      fetchUrl = url + "?action=" + params.action + "&data=" + encoded;
+    }
+    const res = await fetch(fetchUrl);
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch(e) { throw new Error("レスポンス解析失敗: " + text.slice(0, 100)); }
+  };
+
   const fetchLogs = async (url) => {
     setLoading(true);
     try {
-      const res = await fetch(url);
-      const data = await res.json();
+      const data = await gasCall(url);
       setLogs(data.logs || []);
+      if (data.error) notify("取得エラー: " + data.error, "error");
     } catch(e) { notify("データの取得に失敗しました: " + e.message, "error"); }
     setLoading(false);
   };
@@ -89,8 +102,7 @@ function App() {
   const gasPost = async (body) => {
     const url = gasUrl || localStorage.getItem(GAS_URL_STORAGE);
     if (!url) { setShowSettings(true); throw new Error("GAS URLが未設定"); }
-    const res = await fetch(url, { method:"POST", body: JSON.stringify(body) });
-    return res.json();
+    return gasCall(url, body);
   };
 
   const notify = (msg, type="success") => {
