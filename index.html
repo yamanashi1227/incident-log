@@ -76,23 +76,35 @@ function App() {
     else { setLoading(false); setShowSettings(true); }
   }, []);
 
-  // GETクエリパラメータ経由でAPIを呼ぶ（Workspace CORS回避）
-  const gasCall = async (url, params) => {
-    let fetchUrl = url;
+  // JSONP経由でGASを呼ぶ（Google Workspace CORS完全回避）
+  const jsonp = (url, params) => new Promise((resolve, reject) => {
+    const cbName = "cb_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+    const timeout = setTimeout(() => {
+      delete window[cbName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+      reject(new Error("タイムアウト"));
+    }, 15000);
+    window[cbName] = (data) => {
+      clearTimeout(timeout);
+      delete window[cbName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+      resolve(data);
+    };
+    let src = url + "?callback=" + cbName;
     if (params) {
-      const encoded = encodeURIComponent(JSON.stringify(params));
-      fetchUrl = url + "?action=" + params.action + "&data=" + encoded;
+      src += "&action=" + (params.action || "list");
+      src += "&data=" + encodeURIComponent(JSON.stringify(params));
     }
-    const res = await fetch(fetchUrl);
-    const text = await res.text();
-    try { return JSON.parse(text); }
-    catch(e) { throw new Error("レスポンス解析失敗: " + text.slice(0, 100)); }
-  };
+    const script = document.createElement("script");
+    script.src = src;
+    script.onerror = () => { clearTimeout(timeout); reject(new Error("スクリプト読み込みエラー")); };
+    document.head.appendChild(script);
+  });
 
   const fetchLogs = async (url) => {
     setLoading(true);
     try {
-      const data = await gasCall(url);
+      const data = await jsonp(url);
       setLogs(data.logs || []);
       if (data.error) notify("取得エラー: " + data.error, "error");
     } catch(e) { notify("データの取得に失敗しました: " + e.message, "error"); }
@@ -102,7 +114,7 @@ function App() {
   const gasPost = async (body) => {
     const url = gasUrl || localStorage.getItem(GAS_URL_STORAGE);
     if (!url) { setShowSettings(true); throw new Error("GAS URLが未設定"); }
-    return gasCall(url, body);
+    return jsonp(url, body);
   };
 
   const notify = (msg, type="success") => {
