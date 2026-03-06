@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>INCIDENT LOG — 障害管理システム</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0c10; color: #c9d1d9; font-family: 'Noto Sans JP', 'IBM Plex Mono', monospace; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #0a0c10; } ::-webkit-scrollbar-thumb { background: #1e2530; border-radius: 3px; }
+  input, textarea, select { font-family: inherit; }
+  input:focus, textarea:focus, select:focus { outline: none !important; border-color: #4a9eff !important; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+// ======================================================
+// ★ ここに設定を入れる
+// ======================================================
+const DEFAULT_GAS_URL = ""; // Apps ScriptのウェブアプリURLを貼り付け（任意）
+const API_KEY_STORAGE  = "incident-apikey";
+const GAS_URL_STORAGE  = "incident-gas-url";
+// ======================================================
+
+const severityConfig = {
+  critical: { label:"重大", color:"#ff3b3b", bg:"rgba(255,59,59,0.1)",  border:"#ff3b3b" },
+  high:     { label:"高",   color:"#ff8c00", bg:"rgba(255,140,0,0.1)",  border:"#ff8c00" },
+  medium:   { label:"中",   color:"#f5c518", bg:"rgba(245,197,24,0.1)", border:"#f5c518" },
+  low:      { label:"低",   color:"#4caf50", bg:"rgba(76,175,80,0.1)",  border:"#4caf50" },
+};
+const statusConfig = {
+  open:       { label:"未対応", color:"#ff5555" },
+  inProgress: { label:"対応中", color:"#f5c518" },
+  resolved:   { label:"解決済", color:"#4caf50" },
+};
+const emptyForm = {
+  title:"", occurredAt: new Date().toISOString().slice(0,16),
+  severity:"high", status:"open",
+  affectedSystem:"", description:"", rootCause:"", action:"", tags:"",
+};
+
+function App() {
+  const [logs, setLogs]             = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [view, setView]             = useState("dashboard");
+  const [form, setForm]             = useState(emptyForm);
+  const [editId, setEditId]         = useState(null);
+  const [selected, setSelected]     = useState(null);
+  const [analysis, setAnalysis]     = useState("");
+  const [analyzing, setAnalyzing]   = useState(false);
+  const [filterSev, setFilterSev]   = useState("all");
+  const [filterSta, setFilterSta]   = useState("all");
+  const [search, setSearch]         = useState("");
+  const [notification, setNotif]    = useState(null);
+  const [apiKey, setApiKey]         = useState("");
+  const [gasUrl, setGasUrl]         = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingInput, setSettingInput] = useState({ apiKey:"", gasUrl:"" });
+  const [saving, setSaving]         = useState(false);
+
+  useEffect(() => {
+    const k = localStorage.getItem(API_KEY_STORAGE) || "";
+    const g = localStorage.getItem(GAS_URL_STORAGE) || DEFAULT_GAS_URL;
+    setApiKey(k); setGasUrl(g);
+    if (g) fetchLogs(g);
+    else { setLoading(false); setShowSettings(true); }
+  }, []);
+
+  const fetchLogs = async (url) => {
+    setLoading(true);
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+      setLogs(data.logs || []);
+    } catch(e) { notify("データの取得に失敗しました: " + e.message, "error"); }
+    setLoading(false);
+  };
+
+  const gasPost = async (body) => {
+    const url = gasUrl || localStorage.getItem(GAS_URL_STORAGE);
+    if (!url) { setShowSettings(true); throw new Error("GAS URLが未設定"); }
+    const res = await fetch(url, { method:"POST", body: JSON.stringify(body) });
+    return res.json();
+  };
+
+  const notify = (msg, type="success") => {
+    setNotif({ msg, type });
+    setTimeout(() => setNotif(null), 3500);
+  };
+
+  const saveSettings = () => {
+    if (settingInput.gasUrl) {
+      localStorage.setItem(GAS_URL_STORAGE, settingInput.gasUrl.trim());
+      setGasUrl(settingInput.gasUrl.trim());
+    }
+    if (settingInput.apiKey) {
+      localStorage.setItem(API_KEY_STORAGE, settingInput.apiKey.trim());
+      setApiKey(settingInput.apiKey.trim());
+    }
+    setShowSettings(false);
+    notify("設定を保存しました");
+    if (settingInput.gasUrl) fetchLogs(settingInput.gasUrl.trim());
+  };
+
+  const handleSave = async () => {
+    if (!form.title || !form.description) { notify("タイトルと概要は必須です","error"); return; }
+    setSaving(true);
+    try {
+      const data = { ...form, tags: form.tags.split(",").map(t=>t.trim()).filter(Boolean) };
+      if (editId) {
+        await gasPost({ action:"update", data:{ ...data, id:editId } });
+        notify("更新しました");
+      } else {
+        await gasPost({ action:"create", data });
+        notify("登録しました");
+      }
+      await fetchLogs(gasUrl);
+      setForm(emptyForm); setEditId(null); setView("dashboard");
+    } catch(e) { notify("保存に失敗しました: "+e.message,"error"); }
+    setSaving(false);
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm("削除しますか？")) return;
+    try {
+      await gasPost({ action:"delete", id });
+      await fetchLogs(gasUrl);
+      setView("dashboard"); notify("削除しました");
+    } catch(e) { notify("削除に失敗しました","error"); }
+  };
+
+  const handleEdit = (log) => {
+    setForm({ ...log, tags: log.tags?.join(", ")||"" });
+    setEditId(log.id); setView("form");
+  };
+
+  const handleAnalyze = async (log) => {
+    if (!apiKey) { setSettingInput(s=>({...s,apiKey:""})); setShowSettings(true); return; }
+    setSelected(log); setView("analyze"); setAnalysis(""); setAnalyzing(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "x-api-key":apiKey, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
+        body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1000, messages:[{ role:"user", content:
+          `以下の障害ログを詳細に分析してください。\n\n【タイトル】${log.title}\n【発生日時】${log.occurredAt}\n【深刻度】${severityConfig[log.severity].label}\n【ステータス】${statusConfig[log.status].label}\n【影響システム】${log.affectedSystem||"不明"}\n【概要】${log.description}\n【根本原因】${log.rootCause||"未記入"}\n【対応内容】${log.action||"未記入"}\n\n1. **深刻度評価**\n2. **根本原因の考察**\n3. **再発防止策**（3〜5つ）\n4. **類似障害パターン**\n5. **対応の評価と改善点**\n\n日本語で具体的に回答してください。`
+        }]})
+      });
+      const data = await res.json();
+      setAnalysis(data.content?.map(b=>b.text||"").join("")||"分析失敗");
+    } catch(e) { setAnalysis("エラー: "+e.message); }
+    setAnalyzing(false);
+  };
+
+  const handleBulkAnalyze = async () => {
+    if (!apiKey) { setShowSettings(true); return; }
+    setView("analyze"); setSelected(null); setAnalysis(""); setAnalyzing(true);
+    try {
+      const summary = logs.slice(0,20).map((l,i)=>`${i+1}. [${severityConfig[l.severity].label}] ${l.title} (${l.occurredAt?.slice(0,10)}) - ${statusConfig[l.status].label}`).join("\n");
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "x-api-key":apiKey, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
+        body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1000, messages:[{ role:"user", content:`以下の障害ログ一覧を分析し全体トレンドと改善提案をしてください：\n\n${summary}\n\n1. 深刻度の分布と傾向\n2. 頻発パターン\n3. システム全体の健全性\n4. 優先課題TOP3\n5. 運用改善提言` }]})
+      });
+      const data = await res.json();
+      setAnalysis(data.content?.map(b=>b.text||"").join("")||"分析失敗");
+    } catch(e) { setAnalysis("エラー: "+e.message); }
+    setAnalyzing(false);
+  };
+
+  const filtered = logs.filter(l => {
+    if (filterSev!=="all" && l.severity!==filterSev) return false;
+    if (filterSta!=="all" && l.status!==filterSta) return false;
+    if (search && !l.title?.includes(search) && !l.description?.includes(search) && !l.affectedSystem?.includes(search)) return false;
+    return true;
+  });
+
+  const stats = {
+    total: logs.length,
+    open: logs.filter(l=>l.status==="open").length,
+    critical: logs.filter(l=>l.severity==="critical").length,
+    resolved: logs.filter(l=>l.status==="resolved").length,
+  };
+
+  const md = (text) => text
+    .replace(/\*\*(.+?)\*\*/g,'<strong style="color:#e0e0e0">$1</strong>')
+    .replace(/^#{1,3}\s(.+)$/gm,'<div style="font-size:1.05em;font-weight:700;color:#a78bfa;margin:1.2em 0 0.5em;border-left:3px solid #7c3aed;padding-left:10px">$1</div>')
+    .replace(/\n/g,'<br/>');
+
+  const S = {
+    hBtn: (a) => ({ padding:"6px 15px", borderRadius:6, border:"1px solid", borderColor:a?"#4a9eff":"#1e2530", background:a?"rgba(74,158,255,0.1)":"transparent", color:a?"#4a9eff":"#6b7280", fontSize:12, cursor:"pointer", fontFamily:"inherit" }),
+    card: { background:"#0d1117", border:"1px solid #1e2530", borderRadius:10, padding:"20px 24px" },
+    inp: { width:"100%", padding:"10px 14px", borderRadius:7, border:"1px solid #1e2530", background:"#0d1117", color:"#c9d1d9", fontSize:14, fontFamily:"inherit" },
+    lbl: { fontSize:11, color:"#6b7280", display:"block", marginBottom:6, letterSpacing:"0.06em" },
+    btn: (c) => ({ padding:"10px 22px", borderRadius:7, border:"none", background:c, color:"#fff", fontSize:14, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }),
+  };
+
+  return (
+    <div style={{ minHeight:"100vh" }}>
+      {/* Notification */}
+      {notification && (
+        <div style={{ position:"fixed", top:16, right:16, zIndex:9999, background:notification.type==="error"?"#2a1010":"#0d2218", border:`1px solid ${notification.type==="error"?"#ff3b3b":"#4caf50"}`, borderRadius:8, padding:"11px 20px", color:notification.type==="error"?"#ff7070":"#6fcf97", fontSize:13, animation:"fadeIn 0.2s ease" }}>
+          {notification.msg}
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:9998, display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <div style={{ background:"#0d1117", border:"1px solid #7c3aed", borderRadius:12, padding:"32px 36px", width:"100%", maxWidth:500, animation:"fadeIn 0.2s ease" }}>
+            <h3 style={{ fontSize:16, fontWeight:700, color:"#a78bfa", marginBottom:6 }}>⚙ 初期設定</h3>
+            <p style={{ fontSize:12, color:"#6b7280", marginBottom:24, lineHeight:1.8 }}>
+              Google Apps ScriptのウェブアプリURLと、AI分析用のAnthropicAPIキーを設定してください。
+            </p>
+
+            <div style={{ marginBottom:18 }}>
+              <label style={S.lbl}>Apps Script ウェブアプリURL <span style={{color:"#ff5555"}}>*</span></label>
+              <input value={settingInput.gasUrl} onChange={e=>setSettingInput(s=>({...s,gasUrl:e.target.value}))}
+                placeholder="https://script.google.com/macros/s/〇〇〇/exec"
+                style={S.inp} />
+              <div style={{ fontSize:11, color:"#4a5568", marginTop:5 }}>→ Apps Scriptでデプロイ後に取得するURL</div>
+            </div>
+
+            <div style={{ marginBottom:24 }}>
+              <label style={S.lbl}>Anthropic APIキー（AI分析機能・任意）</label>
+              <input value={settingInput.apiKey} onChange={e=>setSettingInput(s=>({...s,apiKey:e.target.value}))}
+                placeholder="sk-ant-..." type="password" style={S.inp} />
+              <div style={{ fontSize:11, color:"#4a5568", marginTop:5 }}>→ <a href="https://console.anthropic.com/" target="_blank" style={{color:"#4a9eff"}}>console.anthropic.com</a> で取得</div>
+            </div>
+
+            <div style={{ display:"flex", gap:10 }}>
+              <button onClick={saveSettings} disabled={!settingInput.gasUrl} style={S.btn(settingInput.gasUrl?"#7c3aed":"#1e2530")}>保存して接続</button>
+              {gasUrl && <button onClick={()=>setShowSettings(false)} style={{ padding:"10px 18px", borderRadius:7, border:"1px solid #1e2530", background:"transparent", color:"#6b7280", fontSize:13, cursor:"pointer" }}>キャンセル</button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <div style={{ borderBottom:"1px solid #1e2530", padding:"0 28px", display:"flex", alignItems:"center", justifyContent:"space-between", height:56, position:"sticky", top:0, background:"#0a0c10", zIndex:100 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ width:8, height:8, borderRadius:"50%", background:stats.critical>0?"#ff3b3b":"#4caf50", boxShadow:stats.critical>0?"0 0 8px #ff3b3b":"0 0 8px #4caf50" }} />
+          <span style={{ fontFamily:"'IBM Plex Mono'", fontWeight:600, fontSize:14, color:"#e0e0e0", letterSpacing:"0.08em" }}>INCIDENT LOG</span>
+          <span style={{ fontSize:11, color:"#3a4050" }}>障害管理システム</span>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <button onClick={()=>setView("dashboard")} style={S.hBtn(view==="dashboard")}>ダッシュボード</button>
+          <button onClick={()=>{setView("form");setForm(emptyForm);setEditId(null)}} style={S.hBtn(view==="form")}>＋ 新規登録</button>
+          {logs.length>0 && <button onClick={handleBulkAnalyze} style={{ padding:"6px 14px", borderRadius:6, border:"1px solid #7c3aed", background:"rgba(124,58,237,0.1)", color:"#a78bfa", fontSize:12, cursor:"pointer" }}>✦ AI一括分析</button>}
+          <button onClick={()=>{setSettingInput({apiKey,gasUrl});setShowSettings(true)}} style={{ padding:"6px 12px", borderRadius:6, border:"1px solid #1e2530", background:"transparent", color:gasUrl?"#4caf50":"#ff8c00", fontSize:11, cursor:"pointer" }}>
+            {gasUrl ? "⚙ 設定済" : "⚙ 設定"}
+          </button>
+          {gasUrl && <button onClick={()=>fetchLogs(gasUrl)} style={{ padding:"6px 12px", borderRadius:6, border:"1px solid #1e2530", background:"transparent", color:"#6b7280", fontSize:11, cursor:"pointer" }}>↻ 更新</button>}
+        </div>
+      </div>
+
+      <div style={{ padding:"28px 28px", maxWidth:1180, margin:"0 auto" }}>
+
+        {/* Loading */}
+        {loading && (
+          <div style={{ textAlign:"center", padding:"80px 0", color:"#4a5568" }}>
+            <div style={{ width:28, height:28, border:"2px solid #4a9eff", borderTopColor:"transparent", borderRadius:"50%", margin:"0 auto 16px", animation:"spin 0.8s linear infinite" }} />
+            <div style={{ fontSize:13 }}>スプレッドシートからデータを取得中...</div>
+          </div>
+        )}
+
+        {/* Dashboard */}
+        {!loading && view==="dashboard" && <>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14, marginBottom:24 }}>
+            {[{label:"総障害数",val:stats.total,color:"#4a9eff"},{label:"未対応",val:stats.open,color:"#ff3b3b"},{label:"重大障害",val:stats.critical,color:"#ff8c00"},{label:"解決済み",val:stats.resolved,color:"#4caf50"}].map(s=>(
+              <div key={s.label} style={S.card}>
+                <div style={{ fontSize:11, color:"#6b7280", marginBottom:10, letterSpacing:"0.08em" }}>{s.label}</div>
+                <div style={{ fontSize:34, fontWeight:700, color:s.color, fontFamily:"'IBM Plex Mono'" }}>{s.val}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display:"flex", gap:10, marginBottom:18, flexWrap:"wrap" }}>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 検索（タイトル・システム・概要）" style={{...S.inp,flex:1,minWidth:220}} />
+            <select value={filterSev} onChange={e=>setFilterSev(e.target.value)} style={{...S.inp,width:"auto",cursor:"pointer"}}>
+              <option value="all">全深刻度</option>
+              {Object.entries(severityConfig).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+            </select>
+            <select value={filterSta} onChange={e=>setFilterSta(e.target.value)} style={{...S.inp,width:"auto",cursor:"pointer"}}>
+              <option value="all">全ステータス</option>
+              {Object.entries(statusConfig).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+            </select>
+          </div>
+
+          {filtered.length===0 ? (
+            <div style={{ textAlign:"center", padding:"80px 0", color:"#3a4050" }}>
+              <div style={{ fontSize:36, marginBottom:14 }}>📋</div>
+              <div style={{ fontSize:14 }}>{logs.length===0?"「＋ 新規登録」から最初の障害ログを追加してください":"該当する障害ログが見つかりません"}</div>
+            </div>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:9 }}>
+              {filtered.map(log=>{
+                const sev=severityConfig[log.severity]||severityConfig.high, sta=statusConfig[log.status]||statusConfig.open;
+                return (
+                  <div key={log.id} onClick={()=>{setSelected(log);setView("detail")}}
+                    style={{ background:"#0d1117", border:"1px solid #1e2530", borderLeft:`3px solid ${sev.border}`, borderRadius:10, padding:"15px 18px", cursor:"pointer", display:"flex", alignItems:"center", gap:14, transition:"background 0.15s" }}
+                    onMouseEnter={e=>e.currentTarget.style.background="#111520"}
+                    onMouseLeave={e=>e.currentTarget.style.background="#0d1117"}>
+                    <div style={{ minWidth:60, textAlign:"center" }}>
+                      <span style={{ fontSize:10, padding:"3px 7px", borderRadius:4, background:sev.bg, color:sev.color, border:`1px solid ${sev.border}`, fontWeight:700 }}>{sev.label}</span>
+                    </div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:14, fontWeight:600, color:"#e0e0e0", marginBottom:4 }}>{log.title}</div>
+                      <div style={{ fontSize:11, color:"#4a5568", display:"flex", gap:14, flexWrap:"wrap" }}>
+                        <span>🕐 {log.occurredAt?.slice(0,16)?.replace("T"," ")}</span>
+                        {log.affectedSystem && <span>⚙ {log.affectedSystem}</span>}
+                        {log.tags?.slice(0,3).map(t=><span key={t} style={{color:"#4a9eff"}}>#{t}</span>)}
+                      </div>
+                    </div>
+                    <div style={{ fontSize:12, color:sta.color, fontWeight:600, minWidth:52, textAlign:"right" }}>{sta.label}</div>
+                    <div style={{ display:"flex", gap:6 }}>
+                      <button onClick={e=>{e.stopPropagation();handleAnalyze(log)}} style={{ padding:"5px 10px", borderRadius:5, border:"1px solid #7c3aed", background:"rgba(124,58,237,0.08)", color:"#a78bfa", fontSize:11, cursor:"pointer" }}>AI分析</button>
+                      <button onClick={e=>{e.stopPropagation();handleEdit(log)}} style={{ padding:"5px 10px", borderRadius:5, border:"1px solid #1e2530", background:"transparent", color:"#6b7280", fontSize:11, cursor:"pointer" }}>編集</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>}
+
+        {/* Form */}
+        {view==="form" && (
+          <div style={{ maxWidth:700 }}>
+            <h2 style={{ fontSize:17, fontWeight:700, color:"#e0e0e0", marginBottom:24 }}>{editId?"障害ログを編集":"新規障害ログ登録"}</h2>
+            <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+              {[{label:"タイトル *",key:"title",ph:"例: 本番DBへの接続タイムアウト"},{label:"影響システム",key:"affectedSystem",ph:"例: 決済API, ユーザー認証サービス"}].map(f=>(
+                <div key={f.key}>
+                  <label style={S.lbl}>{f.label}</label>
+                  <input value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})} placeholder={f.ph} style={S.inp} />
+                </div>
+              ))}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:14 }}>
+                <div><label style={S.lbl}>発生日時</label><input type="datetime-local" value={form.occurredAt} onChange={e=>setForm({...form,occurredAt:e.target.value})} style={S.inp} /></div>
+                <div><label style={S.lbl}>深刻度</label><select value={form.severity} onChange={e=>setForm({...form,severity:e.target.value})} style={{...S.inp,cursor:"pointer"}}>{Object.entries(severityConfig).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}</select></div>
+                <div><label style={S.lbl}>ステータス</label><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})} style={{...S.inp,cursor:"pointer"}}>{Object.entries(statusConfig).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}</select></div>
+              </div>
+              {[{label:"障害概要 *",key:"description",ph:"障害の内容、影響範囲、発生状況..."},{label:"根本原因",key:"rootCause",ph:"特定された根本原因..."},{label:"対応内容",key:"action",ph:"実施した対応、恒久対策..."}].map(f=>(
+                <div key={f.key}><label style={S.lbl}>{f.label}</label><textarea value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})} placeholder={f.ph} rows={3} style={{...S.inp,resize:"vertical"}} /></div>
+              ))}
+              <div><label style={S.lbl}>タグ（カンマ区切り）</label><input value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})} placeholder="例: DB, timeout, 認証" style={S.inp} /></div>
+              <div style={{ display:"flex", gap:10, paddingTop:6 }}>
+                <button onClick={handleSave} disabled={saving} style={S.btn(saving?"#1e2530":"#4a9eff")}>{saving?"保存中...":(editId?"更新する":"登録する")}</button>
+                <button onClick={()=>{setView("dashboard");setForm(emptyForm);setEditId(null)}} style={{ padding:"10px 18px", borderRadius:7, border:"1px solid #1e2530", background:"transparent", color:"#6b7280", fontSize:14, cursor:"pointer" }}>キャンセル</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Detail */}
+        {view==="detail" && selected && (
+          <div style={{ maxWidth:750 }}>
+            <button onClick={()=>setView("dashboard")} style={{ marginBottom:18, padding:"6px 14px", borderRadius:6, border:"1px solid #1e2530", background:"transparent", color:"#6b7280", fontSize:12, cursor:"pointer" }}>← 一覧に戻る</button>
+            <div style={{ ...S.card, borderLeft:`4px solid ${severityConfig[selected.severity]?.border||"#ff8c00"}`, animation:"fadeIn 0.2s ease" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:20 }}>
+                <div>
+                  <h2 style={{ fontSize:19, fontWeight:700, color:"#e0e0e0", marginBottom:10 }}>{selected.title}</h2>
+                  <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                    {severityConfig[selected.severity] && <span style={{ fontSize:11, padding:"3px 10px", borderRadius:4, background:severityConfig[selected.severity].bg, color:severityConfig[selected.severity].color, border:`1px solid ${severityConfig[selected.severity].border}`, fontWeight:700 }}>{severityConfig[selected.severity].label}</span>}
+                    {statusConfig[selected.status] && <span style={{ fontSize:11, padding:"3px 10px", borderRadius:4, background:"#111", color:statusConfig[selected.status].color, border:"1px solid #1e2530" }}>{statusConfig[selected.status].label}</span>}
+                    {selected.tags?.map(t=><span key={t} style={{fontSize:11,color:"#4a9eff"}}>#{t}</span>)}
+                  </div>
+                </div>
+                <div style={{ display:"flex", gap:7 }}>
+                  <button onClick={()=>handleAnalyze(selected)} style={{ padding:"7px 13px", borderRadius:6, border:"1px solid #7c3aed", background:"rgba(124,58,237,0.1)", color:"#a78bfa", fontSize:12, cursor:"pointer" }}>✦ AI分析</button>
+                  <button onClick={()=>handleEdit(selected)} style={{ padding:"7px 13px", borderRadius:6, border:"1px solid #1e2530", background:"transparent", color:"#6b7280", fontSize:12, cursor:"pointer" }}>編集</button>
+                  <button onClick={()=>handleDelete(selected.id)} style={{ padding:"7px 13px", borderRadius:6, border:"1px solid #2a1010", background:"transparent", color:"#ff5555", fontSize:12, cursor:"pointer" }}>削除</button>
+                </div>
+              </div>
+              {[{label:"発生日時",val:selected.occurredAt?.replace("T"," ")},{label:"影響システム",val:selected.affectedSystem||"—"},{label:"障害概要",val:selected.description},{label:"根本原因",val:selected.rootCause||"—"},{label:"対応内容",val:selected.action||"—"}].map(f=>(
+                <div key={f.label} style={{ marginBottom:18 }}>
+                  <div style={{ fontSize:11, color:"#4a5568", marginBottom:5, letterSpacing:"0.08em" }}>{f.label}</div>
+                  <div style={{ fontSize:14, color:"#c9d1d9", lineHeight:1.8, whiteSpace:"pre-wrap" }}>{f.val}</div>
+                </div>
+              ))}
+              <div style={{ fontSize:11, color:"#3a4050", marginTop:18, paddingTop:14, borderTop:"1px solid #1e2530" }}>
+                登録: {selected.createdAt?.slice(0,16)?.replace("T"," ")} ／ 更新: {selected.updatedAt?.slice(0,16)?.replace("T"," ")}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Analyze */}
+        {view==="analyze" && (
+          <div style={{ maxWidth:780 }}>
+            <button onClick={()=>setView("dashboard")} style={{ marginBottom:18, padding:"6px 14px", borderRadius:6, border:"1px solid #1e2530", background:"transparent", color:"#6b7280", fontSize:12, cursor:"pointer" }}>← 一覧に戻る</button>
+            <div style={{ ...S.card, border:"1px solid #7c3aed", animation:"fadeIn 0.2s ease" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20 }}>
+                <div style={{ width:8, height:8, borderRadius:"50%", background:analyzing?"#a78bfa":"#4caf50", boxShadow:analyzing?"0 0 10px #a78bfa":"0 0 8px #4caf50", animation:analyzing?"pulse 1.2s infinite":"none" }} />
+                <h2 style={{ fontSize:16, fontWeight:700, color:"#a78bfa" }}>{selected?`AI分析: ${selected.title}`:"全障害ログ トレンド分析"}</h2>
+              </div>
+              {analyzing ? (
+                <div style={{ textAlign:"center", padding:"60px 0", color:"#6b7280" }}>
+                  <div style={{ width:28, height:28, border:"2px solid #7c3aed", borderTopColor:"transparent", borderRadius:"50%", margin:"0 auto 16px", animation:"spin 0.8s linear infinite" }} />
+                  <div style={{ fontSize:13 }}>Claude が分析中...</div>
+                </div>
+              ) : (
+                <div style={{ fontSize:14, lineHeight:1.95, color:"#c9d1d9" }} dangerouslySetInnerHTML={{__html:md(analysis)}} />
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
